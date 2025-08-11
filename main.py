@@ -100,24 +100,38 @@ async def run_hackrx_query(
     """
     Main endpoint for processing documents and answering queries
     
-    This endpoint:
-    1. Downloads and processes the document from the provided URL
-    2. Creates embeddings and stores them in vector database
-    3. For each question, performs semantic search
-    4. Uses LLM to generate contextual answers
+    This endpoint automatically:
+    1. Downloads and processes the document from the provided URL (if not already processed)
+    2. Creates embeddings using Google Gemini and stores them in Pinecone vector database
+    3. For each question, performs semantic search to find relevant document sections
+    4. Uses LLM to generate contextual answers based on retrieved content
     5. Returns structured JSON response with explainable decisions
+    
+    No manual preprocessing required - just send URL + questions and get answers!
     """
     try:
-        logger.info(f"Processing request for document: {request.documents}")
-        logger.info(f"Number of questions: {len(request.questions)}")
+        logger.info(f"🚀 NEW QUERY REQUEST RECEIVED")
+        logger.info(f"📄 Document URL: {request.documents}")
+        logger.info(f"❓ Number of questions: {len(request.questions)}")
+        logger.info("=" * 60)
         
-        # Process the document and get answers
+        # Show current document status
+        doc_info = query_handler.get_current_document_info()
+        if doc_info["has_document_loaded"]:
+            logger.info(f"📋 Current document: {doc_info['current_document_hash']}")
+        else:
+            logger.info("📋 No document currently loaded")
+        
+        # Process the document and get answers (automatic embedding generation with single-doc mode)
         response = await query_handler.process_query(request)
+        
+        logger.info(f"✅ Successfully processed {len(request.questions)} questions")
+        logger.info("🎉 Query processing complete!")
         
         return response
         
     except Exception as e:
-        logger.error(f"Error processing query: {str(e)}")
+        logger.error(f"❌ Error processing query: {str(e)}")
         raise HTTPException(
             status_code=500, 
             detail=f"Error processing query: {str(e)}"
@@ -125,13 +139,29 @@ async def run_hackrx_query(
 
 @app.get(f"/api/{settings.API_VERSION}/documents/status")
 async def document_status(token: str = Depends(verify_token)):
-    """Get status of document processing"""
+    """Get status of document processing and current loaded document"""
     try:
-        # Return current system status
+        # Get current document info
+        doc_info = query_handler.get_current_document_info()
+        
+        # Get Pinecone stats
+        vector_count = embedding_service.get_vector_count() if embedding_service else 0
+        
         return {
             "status": "operational",
-            "processed_documents": embedding_service.get_document_count() if embedding_service else 0,
-            "vector_store_size": embedding_service.get_vector_count() if embedding_service else 0
+            "mode": "single_document_mode",
+            "current_document": {
+                "url": doc_info["current_document_url"],
+                "hash": doc_info["current_document_hash"],
+                "is_loaded": doc_info["has_document_loaded"]
+            },
+            "pinecone_stats": {
+                "total_vectors": vector_count,
+                "index_name": settings.PINECONE_INDEX_NAME
+            },
+            "cache_info": {
+                "cached_documents": doc_info["cache_size"]
+            }
         }
     except Exception as e:
         logger.error(f"Error getting document status: {str(e)}")

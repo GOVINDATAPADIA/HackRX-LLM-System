@@ -26,17 +26,28 @@ class DocumentProcessor:
         self.supported_formats = settings.SUPPORTED_FORMATS.split(',')
         self.chunk_size = settings.CHUNK_SIZE
         self.chunk_overlap = settings.CHUNK_OVERLAP
-        self.max_chunk_size = 32000  # Hard limit for API compatibility (32KB)
+        self.max_chunk_size = 4000  # Much smaller limit for better semantic processing (4KB)
         
     def _validate_chunk_size(self, content: str) -> str:
         """Validate and truncate chunk if too large"""
-        if len(content.encode('utf-8')) > self.max_chunk_size:
-            logger.warning(f"Chunk size {len(content.encode('utf-8'))} bytes exceeds limit, truncating...")
-            # Truncate to safe size with some buffer
-            safe_size = self.max_chunk_size - 1000  # Leave 1KB buffer
-            while len(content.encode('utf-8')) > safe_size and content:
-                content = content[:-100]  # Remove 100 chars at a time
-            logger.info(f"Chunk truncated to {len(content.encode('utf-8'))} bytes")
+        byte_size = len(content.encode('utf-8'))
+        if byte_size > self.max_chunk_size:
+            logger.warning(f"Chunk size {byte_size} bytes exceeds limit of {self.max_chunk_size}, truncating...")
+            
+            # Calculate safe character count (rough estimate)
+            char_limit = int(self.max_chunk_size * 0.8)  # Conservative estimate
+            
+            if len(content) > char_limit:
+                # Try to truncate at sentence boundary
+                truncated = content[:char_limit]
+                last_period = truncated.rfind('.')
+                if last_period > char_limit * 0.7:  # If we can find a good sentence ending
+                    content = truncated[:last_period + 1]
+                else:
+                    content = truncated
+                
+            logger.info(f"Chunk truncated to {len(content)} characters ({len(content.encode('utf-8'))} bytes)")
+            
         return content
         
     async def download_document(self, url: str) -> str:
@@ -161,21 +172,174 @@ class DocumentProcessor:
             raise Exception(f"Failed to extract plain text: {str(e)}")
     
     def _create_chunks(self, text: str, source_path: str) -> List[DocumentChunk]:
-        """Create semantic chunks with clause-level boundaries and metadata"""
+        """Create semantic chunks with simple but effective approach"""
         chunks = []
         
         # Preprocess text - normalize whitespace and fix common issues
         text = self._preprocess_text(text)
         
-        # Detect document structure and extract clauses
-        structured_sections = self._extract_document_structure(text)
+        logger.info(f"Starting chunking process for text of length: {len(text)} characters")
         
-        # Create semantic chunks based on document structure
-        for section in structured_sections:
-            section_chunks = self._create_semantic_chunks_from_section(section, source_path, len(chunks))
-            chunks.extend(section_chunks)
+        # Use simple paragraph-based chunking with overlap
+        chunks = self._create_simple_overlapping_chunks(text, source_path)
+        
+        logger.info(f"Created {len(chunks)} chunks using simple overlapping method")
         
         return chunks
+    
+    def _create_simple_overlapping_chunks(self, text: str, source_path: str) -> List[DocumentChunk]:
+        """Create overlapping chunks with enhanced numerical content preservation"""
+        chunks = []
+        chunk_size = self.chunk_size
+        overlap_size = self.chunk_overlap
+        
+        # Split text into sentences for better chunk boundaries
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        # PHASE 3: Identify numerical content for special handling
+        numerical_sentences = []
+        for i, sentence in enumerate(sentences):
+            if self._contains_key_numerical_info(sentence):
+                # Add context around numerical sentences
+                start_idx = max(0, i-1)
+                end_idx = min(len(sentences), i+2)
+                context_sentences = sentences[start_idx:end_idx]
+                numerical_sentences.extend(context_sentences)
+        
+        current_chunk = ""
+        sentence_buffer = []
+        chunk_index = 0
+        
+        for sentence in sentences:
+            sentence_buffer.append(sentence)
+            test_chunk = " ".join(sentence_buffer)
+            
+            # Preserve numerical content by creating special chunks
+            if self._contains_key_numerical_info(sentence):
+                # Ensure this sentence gets preserved with enough context
+                if len(sentence_buffer) < 3:
+                    continue  # Keep building context
+            
+            # If adding this sentence would exceed chunk size, create a chunk
+            if len(test_chunk) > chunk_size and current_chunk:
+                # Create chunk from current content
+                chunk_content = current_chunk.strip()
+                if chunk_content and len(chunk_content) > 50:
+                    
+                    chunk_id = self._generate_chunk_id(source_path, chunk_index)
+                    
+                    # Enhanced metadata for better search
+                    metadata = {
+                        "source": source_path,
+                        "chunk_index": chunk_index,
+                        "character_count": len(chunk_content),
+                        "word_count": len(chunk_content.split()),
+                        "section_title": self._extract_section_title(chunk_content),
+                        "chunk_type": "numerical_enhanced" if self._contains_key_numerical_info(chunk_content) else "paragraph_based",
+                        "has_numerical_data": self._contains_key_numerical_info(chunk_content),
+                        "has_financial_terms": self._contains_financial_terms(chunk_content),
+                        "has_eligibility_info": self._contains_eligibility_terms(chunk_content)
+                    }
+                    
+                    chunk = DocumentChunk(
+                        content=self._validate_chunk_size(chunk_content),
+                        chunk_id=chunk_id,
+                        metadata=metadata
+                    )
+                    chunks.append(chunk)
+                    chunk_index += 1
+                
+                # Start new chunk with enhanced overlap for numerical content
+                if self._contains_key_numerical_info(current_chunk):
+                    overlap_sentences = sentence_buffer[-4:]  # More overlap for numerical content
+                else:
+                    overlap_sentences = sentence_buffer[-2:]  # Standard overlap
+                    
+                current_chunk = " ".join(overlap_sentences)
+                sentence_buffer = overlap_sentences + [sentence]
+            else:
+                current_chunk = test_chunk
+        
+        # Create final chunk if there's remaining content
+        if current_chunk.strip() and len(current_chunk.strip()) > 50:
+            chunk_id = self._generate_chunk_id(source_path, chunk_index)
+            
+            metadata = {
+                "source": source_path,
+                "chunk_index": chunk_index,
+                "character_count": len(current_chunk.strip()),
+                "word_count": len(current_chunk.split()),
+                "section_title": self._extract_section_title(current_chunk),
+                "chunk_type": "numerical_enhanced" if self._contains_key_numerical_info(current_chunk) else "paragraph_based",
+                "has_numerical_data": self._contains_key_numerical_info(current_chunk),
+                "has_financial_terms": self._contains_financial_terms(current_chunk),
+                "has_eligibility_info": self._contains_eligibility_terms(current_chunk)
+            }
+            
+            chunk = DocumentChunk(
+                content=self._validate_chunk_size(current_chunk.strip()),
+                chunk_id=chunk_id,
+                metadata=metadata
+            )
+            chunks.append(chunk)
+        
+        logger.info(f"Enhanced chunking created {len(chunks)} chunks with average size: {sum(len(c.content) for c in chunks) // len(chunks) if chunks else 0} characters")
+        
+        # Log special chunk types
+        numerical_chunks = sum(1 for c in chunks if c.metadata.get("has_numerical_data"))
+        financial_chunks = sum(1 for c in chunks if c.metadata.get("has_financial_terms"))
+        logger.info(f"Special chunks: {numerical_chunks} numerical, {financial_chunks} financial")
+        
+        return chunks
+    
+    def _contains_key_numerical_info(self, text: str) -> bool:
+        """Check if text contains important numerical information"""
+        import re
+        
+        # Patterns for important numerical data
+        patterns = [
+            r'₹[\d,]+(?:\.\d+)?(?:\s*(?:lakh|crore|thousand))?',  # Indian currency amounts
+            r'\d+(?:\.\d+)?%',  # Percentages
+            r'\d+\s*(?:years?|months?|days?)',  # Time periods
+            r'(?:minimum|maximum|up to|from|between)\s+₹?[\d,]+',  # Limits and ranges
+            r'\d+(?:\.\d+)?\s*(?:lakh|crore)',  # Large amounts
+            r'age\s+(?:limit|range|between|from|to)?\s*\d+',  # Age ranges
+            r'sum\s+insured.*₹[\d,]+',  # Sum insured amounts
+        ]
+        
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+    
+    def _contains_financial_terms(self, text: str) -> bool:
+        """Check if text contains financial/insurance terms"""
+        financial_terms = [
+            'co-payment', 'co-pay', 'deductible', 'premium', 'sum insured', 
+            'coverage', 'reimbursement', 'claim', 'policy limit'
+        ]
+        text_lower = text.lower()
+        return any(term in text_lower for term in financial_terms)
+    
+    def _contains_eligibility_terms(self, text: str) -> bool:
+        """Check if text contains eligibility-related terms"""
+        eligibility_terms = [
+            'eligibility', 'eligible', 'age limit', 'entry age', 'renewal',
+            'waiting period', 'pre-existing', 'exclusion'
+        ]
+        text_lower = text.lower()
+        return any(term in text_lower for term in eligibility_terms)
+    
+    def _extract_section_title(self, content: str) -> str:
+        """Extract a simple section title from chunk content"""
+        lines = content.strip().split('\n')
+        first_line = lines[0].strip()
+        
+        # If first line is short and looks like a title, use it
+        if len(first_line) < 100 and any(word in first_line.upper() for word in ['POLICY', 'SECTION', 'CLAUSE', 'BENEFITS', 'COVERAGE', 'EXCLUSION']):
+            return first_line
+        
+        # Otherwise, create title from first few words
+        words = content.split()[:10]
+        return " ".join(words) + "..." if len(words) == 10 else " ".join(words)
     
     def _extract_document_structure(self, text: str) -> List[Dict[str, Any]]:
         """Extract document structure with clause-level metadata"""
@@ -396,11 +560,14 @@ class DocumentProcessor:
         """Clean and normalize text before chunking"""
         import re
         
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
+        logger.info(f"Preprocessing text of length: {len(text)}")
         
-        # Fix common OCR/PDF extraction issues
-        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between camelCase
+        # Remove excessive whitespace but preserve paragraph structure
+        text = re.sub(r'[ \t]+', ' ', text)              # Normalize spaces and tabs
+        text = re.sub(r'\n\s*\n', '\n\n', text)          # Normalize paragraph breaks
+        
+        # Fix common PDF extraction issues
+        text = re.sub(r'([a-z])-\s*\n\s*([a-z])', r'\1\2', text)  # Fix hyphenated words across lines
         text = re.sub(r'(\.)([A-Z])', r'\1 \2', text)     # Space after period before capital
         text = re.sub(r'(\d+)\.(\d+)', r'\1.\2', text)    # Preserve decimal numbers
         
@@ -408,6 +575,10 @@ class DocumentProcessor:
         text = re.sub(r'\.{2,}', '.', text)               # Multiple periods to single
         text = re.sub(r'\s*\.\s*', '. ', text)            # Standardize period spacing
         
+        # Ensure proper sentence structure
+        text = re.sub(r'([a-z])\s*\n\s*([A-Z])', r'\1. \2', text)  # Add periods where missing
+        
+        logger.info(f"Text preprocessed, final length: {len(text)}")
         return text.strip()
     
     def _recursive_split(self, text: str, separators: List[str], chunk_size: int, chunk_overlap: int) -> List[str]:

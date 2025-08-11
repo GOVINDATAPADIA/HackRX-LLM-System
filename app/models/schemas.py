@@ -64,6 +64,7 @@ class SearchResult(BaseModel):
     chunk: DocumentChunk = Field(..., description="The matching document chunk")
     similarity_score: float = Field(..., description="Similarity score (0-1)")
     rank: int = Field(..., description="Rank in search results")
+    enhanced_score: Optional[float] = Field(None, description="Enhanced relevance score after re-ranking")
 
 
 class LLMResponse(BaseModel):

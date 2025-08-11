@@ -71,13 +71,18 @@ class LLMService:
             
             answer = response.text if response.text else "No answer generated"
             
+            # PHASE 2: Fact Verification for Numerical Accuracy
+            verification_result = await self._verify_numerical_facts(question, answer, context_chunks)
+            
             # Gemini doesn't provide token usage, so we estimate
             tokens_used = prompt_tokens + self._count_tokens(answer)
             
-            # Calculate confidence based on search results quality
-            confidence = self._calculate_confidence(search_results, answer)
+            # Enhanced confidence calculation incorporating verification
+            base_confidence = self._calculate_confidence(search_results, answer)
+            verification_confidence = verification_result["confidence"]
+            confidence = (base_confidence + verification_confidence) / 2  # Average both confidences
             
-            # Generate reasoning
+            # Generate reasoning with verification details
             reasoning = self._generate_reasoning(question, search_results, answer)
             
             llm_response = LLMResponse(
@@ -96,8 +101,34 @@ class LLMService:
             raise Exception(f"Failed to generate answer: {str(e)}")
     
     def _build_system_prompt(self) -> str:
-        """Build system prompt for the LLM"""
-        return """You are an expert document analysis assistant specializing in insurance, legal, HR, and compliance documents. Your task is to answer questions based on provided document excerpts with high accuracy and clear explanations.
+        """Build enhanced system prompt for maximum accuracy"""
+        return """You are an expert insurance policy analyst with exceptional attention to detail. Your task is to provide precise, definitive answers based on document excerpts.
+
+CRITICAL INSTRUCTIONS:
+1. EXTRACT EXACT NUMBERS: When asked for amounts, ages, percentages, or periods, find and state the EXACT figures from the text
+2. BE DEFINITIVE: Avoid hedge words like "likely," "probably," "may be" - state facts directly
+3. PRIORITIZE DIRECT QUOTES: When possible, quote exact phrases containing key information
+4. NUMERICAL ACCURACY: Double-check all numbers, percentages, and ranges before responding
+5. STRUCTURED ANSWERS: For complex questions, organize information clearly
+
+ANSWER FORMAT:
+- Start with the direct answer to the question
+- Include specific numbers/percentages/ranges from the document
+- Provide supporting context only if needed
+- End with clear, definitive conclusion
+
+EXAMPLES OF GOOD RESPONSES:
+❌ "The policy likely covers this with some restrictions"
+✅ "Yes, the policy covers this up to ₹2,000 per hospitalization"
+
+❌ "The age range appears to be around 18-65"  
+✅ "The entry age for adults is 18 to 65 years"
+
+FOCUS AREAS:
+- Policy limits and ranges (sum insured, age limits)
+- Specific percentages (co-payment, coverage)
+- Time periods (waiting periods, coverage duration)
+- Eligibility criteria and conditions
 
 Guidelines:
 1. Answer questions directly and precisely based on the provided context
@@ -119,20 +150,100 @@ Focus areas:
 Provide confident, factual answers based on the document content and standard insurance policy practices."""
     
     def _build_user_prompt(self, question: str, context_chunks: List[Dict], additional_context: str = "") -> str:
-        """Build user prompt with question and context"""
-        prompt = f"Question: {question}\n\n"
+        """Build enhanced user prompt with numerical focus"""
         
-        if additional_context:
-            prompt += f"Additional Context: {additional_context}\n\n"
+        # Analyze question type for specialized prompting
+        question_lower = question.lower()
+        is_numerical = any(word in question_lower for word in ['amount', 'percentage', 'age', 'limit', 'minimum', 'maximum', 'sum', 'cost', 'price', '%'])
+        is_coverage = any(word in question_lower for word in ['cover', 'include', 'eligible', 'available'])
+        is_period = any(word in question_lower for word in ['period', 'waiting', 'days', 'months', 'years'])
         
-        prompt += "Relevant Document Excerpts:\n"
+        prompt = f"Based on the document excerpts below, answer this question with maximum accuracy:\n\n"
+        prompt += f"QUESTION: {question}\n\n"
+        
+        # Add specific instructions based on question type
+        if is_numerical:
+            prompt += "⚠️ NUMERICAL QUESTION: Focus on finding EXACT numbers, amounts, percentages, and ranges. Quote the specific figures.\n\n"
+        elif is_coverage:
+            prompt += "⚠️ COVERAGE QUESTION: Provide definitive yes/no answer with specific conditions and limits.\n\n"
+        elif is_period:
+            prompt += "⚠️ TIME PERIOD QUESTION: Extract exact durations, waiting periods, and time limits.\n\n"
+        
+        prompt += "RELEVANT DOCUMENT EXCERPTS:\n"
+        prompt += "=" * 50 + "\n\n"
         
         for i, chunk in enumerate(context_chunks, 1):
-            prompt += f"\n[Excerpt {i}] (Relevance: {chunk['similarity']:.2f})\n"
+            prompt += f"EXCERPT {i} (Relevance: {chunk['similarity']:.3f}):\n"
             prompt += f"{chunk['content']}\n"
-            prompt += f"Source: {chunk['source']}\n"
+            prompt += "-" * 30 + "\n\n"
         
-        prompt += "\nPlease provide a comprehensive answer based on the above excerpts:"
+        if additional_context:
+            prompt += f"ADDITIONAL CONTEXT:\n{additional_context}\n\n"
+        
+        prompt += "INSTRUCTIONS FOR THIS ANSWER:\n"
+        prompt += "1. Read all excerpts carefully for the specific information requested\n"
+        prompt += "2. Extract EXACT numbers, percentages, or specific terms mentioned\n"
+        prompt += "3. Provide a direct, definitive answer\n"
+        prompt += "4. Include specific details from the document excerpts\n"
+        prompt += "5. Avoid uncertain language - be confident in your response\n\n"
+        
+        prompt += "ANSWER:"
+        
+        return prompt
+    
+    async def _verify_numerical_facts(self, question: str, answer: str, context_chunks: List[Dict]) -> Dict[str, Any]:
+        """Verify numerical facts in the answer against source content"""
+        
+        # Extract numbers from the answer
+        import re
+        numbers_in_answer = re.findall(r'₹?[\d,]+(?:\.\d+)?%?', answer)
+        
+        if not numbers_in_answer:
+            return {"verified": True, "confidence": 1.0, "details": "No numerical claims to verify"}
+        
+        verification_prompt = f"""
+FACT VERIFICATION TASK:
+Verify if these numerical claims from an answer are accurate based on the source text.
+
+ANSWER CLAIMS: {answer}
+
+NUMBERS TO VERIFY: {numbers_in_answer}
+
+SOURCE EXCERPTS:
+"""
+        
+        for i, chunk in enumerate(context_chunks, 1):
+            verification_prompt += f"\nEXCERPT {i}:\n{chunk['content']}\n"
+        
+        verification_prompt += """
+VERIFICATION INSTRUCTIONS:
+1. Check each number/percentage/amount in the answer against the source text
+2. Mark as VERIFIED if the exact number appears in source text
+3. Mark as CONFLICTED if source shows different number
+4. Mark as UNSUPPORTED if number not found in source
+
+Respond with:
+VERIFICATION: [VERIFIED/CONFLICTED/UNSUPPORTED]
+CONFIDENCE: [0.0-1.0]
+DETAILS: [Brief explanation]
+"""
+        
+        try:
+            verification_response = self.model.generate_content(verification_prompt)
+            verification_text = verification_response.text if verification_response.text else "No verification response"
+            
+            # Parse verification result
+            is_verified = "VERIFIED" in verification_text and "CONFLICTED" not in verification_text
+            confidence = 0.9 if is_verified else 0.3
+            
+            return {
+                "verified": is_verified,
+                "confidence": confidence,
+                "details": verification_text
+            }
+        except Exception as e:
+            logger.warning(f"Fact verification failed: {str(e)}")
+            return {"verified": True, "confidence": 0.5, "details": "Verification unavailable"}
         
         return prompt
     

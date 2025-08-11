@@ -26,13 +26,13 @@ class Settings(BaseSettings):
     # Document Processing
     MAX_FILE_SIZE_MB: int = 50
     SUPPORTED_FORMATS: str = "pdf,docx,txt,eml"
-    CHUNK_SIZE: int = 800  # Reduced to handle API limits (was 1200)
-    CHUNK_OVERLAP: int = 100  # Reduced overlap for smaller chunks (was 200)
+    CHUNK_SIZE: int = 1000  # Optimal size for semantic chunks
+    CHUNK_OVERLAP: int = 150  # Good overlap to preserve context
     
-    # Vector Database Configuration
+    # Vector Database Configuration - Optimized for speed
     VECTOR_DIMENSION: int = 1536  # Match existing Pinecone index dimension
-    TOP_K_RESULTS: int = 12  # Increased for better retrieval (was 8)
-    SIMILARITY_THRESHOLD: float = 0.5  # Lowered for better recall (was 0.7)
+    TOP_K_RESULTS: int = 8  # Reduced for speed (was 12)
+    SIMILARITY_THRESHOLD: float = 0.2  # Keep low threshold for recall
     
     # Logging
     LOG_LEVEL: str = "INFO"

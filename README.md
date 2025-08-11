@@ -1,7 +1,18 @@
 # LLM-Powered Intelligent Query-Retrieval System
 ## Bajaj HackRx 2025 Submission
 
-A sophisticated document processing and question-answering system that leverages Large Language Models (LLMs) to analyze insurance, legal, HR, and compliance documents with high accuracy and explainable reasoning.
+A sophisticated document processing and question-answering system that leverages Large Language Models (LLMs) to analyze insurance, legal, HR, and compliance documents with **automatic embedding generation** and high accuracy responses.
+
+## ⚡ Key Features
+
+- **🚀 Automatic Processing**: No manual steps required - just send URL + questions and get answers!
+- **� Single Document Mode**: Automatically clears old data when new PDF is provided
+- **�📄 Multi-format Support**: Handles PDFs, DOCX, and email documents
+- **🧠 Smart Embeddings**: Uses Google Gemini for high-quality vector representations
+- **💾 Vector Database**: Pinecone for fast semantic search
+- **🎯 Intelligent QA**: Context-aware answers with explainable reasoning
+- **🔒 Secure API**: Bearer token authentication
+- **⚡ Smart Caching**: Same URL = reuse embeddings, different URL = auto-clear and reload
 
 ## 🎯 Problem Statement Solution
 
@@ -12,24 +23,29 @@ This system addresses the HackRx challenge by implementing:
 3. **Intelligent Question Answering**: Gemini-1.5-pro powered responses with context
 4. **Explainable AI**: Provides reasoning and source traceability
 5. **RESTful API**: FastAPI-based backend with authentication
+6. **⭐ NEW: Automatic Embedding Generation**: Documents are processed automatically when API is called
 
 ## 🏗️ System Architecture
 
 ```
-Input Documents (PDF/DOCX/Email) 
+📡 API Request (URL + Questions)
     ↓
-Document Processor (Text Extraction & Chunking)
+🔍 Same document as before?
+    ↓ (if different)
+🧹 Auto-clear old Pinecone data
+    ↓
+📥 Document Processor (Download & Chunk)
     ↓  
-Embedding Service (Google embedding-001)
+🧠 Embedding Service (Google Gemini embedding-001)
     ↓
-Vector Database (Pinecone Index)
+💾 Vector Database (Pinecone Storage - Single Document Mode)
     ↓
-Query Handler (Semantic Search + LLM)
+🎯 Query Handler (Semantic Search + LLM)
     ↓
-JSON Response (Structured Answers)
+✅ JSON Response (Structured Answers)
 ```
 
-## 🚀 Quick Start
+## ⚡ Quick Start (No Manual Processing Required!)
 
 ### Prerequisites
 - Python 3.8+
